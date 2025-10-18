@@ -1,108 +1,98 @@
-name: Persistent RDP (72h Auto-Restore & Same IP/Password)
+name: Persistent RDP (∞ Auto-Restore & Same IP/Password)
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 0 */3 * *'  # Tự chạy lại mỗi 3 ngày (72 tiếng)
+  workflow_dispatch:  # Bấm "Run workflow" thủ công để khởi chạy lại nếu muốn
 
 jobs:
   rdp-server:
-    runs-on: windows-latest
-    timeout-minutes: 4320 # 72h
+    name: Start RDP on Self-Hosted Runner (Unlimited Time)
+    runs-on: self-hosted  # 🔥 Dùng máy ảo hoặc VPS của bạn (không giới hạn 6h)
 
     steps:
       - name: 🔹 Enable RDP Access
+        shell: powershell
         run: |
+          Write-Host "🟢 Enabling RDP..."
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
-          Restart-Service TermService
+          Restart-Service TermService -ErrorAction SilentlyContinue
+          Write-Host "✅ RDP Enabled Successfully!"
 
       - name: 🔹 Create or Restore RDP User
+        shell: powershell
         run: |
-          Add-Type -AssemblyName System.Security
           $passPath = "C:\backup\rdp-pass.txt"
+          if (!(Test-Path "C:\backup")) { New-Item -ItemType Directory -Path "C:\backup" | Out-Null }
           if (Test-Path $passPath) {
-            $password = Get-Content $passPath
-            Write-Host "🔁 Reusing existing RDP password."
+              $password = Get-Content $passPath
+              Write-Host "🔁 Reusing existing password."
           } else {
-            $chars = ([char[]](33..126))
-            $password = -join (1..16 | ForEach-Object { $chars | Get-Random })
-            New-Item -ItemType File -Path $passPath -Force | Out-Null
-            Set-Content -Path $passPath -Value $password
-            Write-Host "🔐 Created new password and saved for reuse."
+              $chars = ([char[]](33..126))
+              $password = -join (1..16 | ForEach-Object { $chars | Get-Random })
+              Set-Content -Path $passPath -Value $password
+              Write-Host "🔐 Created new password and saved."
           }
+
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-            New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-            Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+              New-LocalUser -Name "RDP" -Password $securePass -FullName "RDP User" -Description "Persistent RDP Account"
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+              Write-Host "✅ Created new RDP user."
           } else {
-            Set-LocalUser -Name "RDP" -Password $securePass
-          }
-          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
-
-      - name: 🔹 Install & Connect Tailscale (Static Hostname)
-        run: |
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $path = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $url -OutFile $path
-          Start-Process msiexec.exe -ArgumentList "/i `"$path`" /quiet /norestart" -Wait
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=windows-rdp-stv
-          $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4)[0]
-          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
-
-      - name: 🔹 Restore Backup (if exists)
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-backup
-          path: C:\backup
-        continue-on-error: true
-
-      - name: 🔹 Extract Previous Environment
-        run: |
-          if (Test-Path C:\backup\system-backup.zip) {
-            Write-Host "🗂️ Restoring full system environment..."
-            Expand-Archive C:\backup\system-backup.zip -DestinationPath C:\ -Force
-          } else {
-            Write-Host "🆕 No previous backup found — starting fresh."
+              Set-LocalUser -Name "RDP" -Password $securePass
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+              Write-Host "♻️ Updated existing user password."
           }
 
-      - name: 🔹 Show Current RDP Credentials
-        run: |
-          Write-Host "=============================="
-          Write-Host " 🖥️  RDP INFO"
-          Write-Host " Address: $env:TAILSCALE_IP"
-          Write-Host " User: RDP"
-          Write-Host " Pass: $env:RDP_PASSWORD"
-          Write-Host "=============================="
+          Write-Host ""
+          Write-Host "==============================="
+          Write-Host "RDP Info:"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $password"
+          Write-Host "==============================="
 
-      - name: 🔹 Keep Machine Alive (72h with Warnings)
+      - name: 🧹 Cleanup & Optimize
+        shell: powershell
         run: |
-          for ($i = 0; $i -lt 864; $i++) {
-            $remaining = 72 - ($i * 5 / 60)
-            if ($remaining -le 1) {
-              Write-Host "⚠️  Gần hết thời gian ($remaining giờ còn lại). Sắp sao lưu hệ thống..."
-            }
-            Start-Sleep -Seconds 300
+          Write-Host "🧹 Starting cleanup and optimization..."
+          Try {
+              # Stop heavy services
+              foreach ($svc in @("SysMain","DiagTrack","WSearch")) {
+                  if (Get-Service $svc -ErrorAction SilentlyContinue) {
+                      Stop-Service $svc -Force -ErrorAction SilentlyContinue
+                      Set-Service $svc -StartupType Disabled
+                      Write-Host " - Disabled $svc"
+                  }
+              }
+
+              # Delete temp files
+              Get-ChildItem "C:\Windows\Temp" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+              $temp = "$env:TEMP"
+              Get-ChildItem $temp -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -Recurse -ErrorAction SilentlyContinue
+              Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+
+              # Disable hibernation
+              powercfg -h off | Out-Null
+
+              # Optimize disk
+              Optimize-Volume -DriveLetter C -ReTrim -ErrorAction SilentlyContinue | Out-Null
+              Optimize-Volume -DriveLetter C -Defrag -ErrorAction SilentlyContinue | Out-Null
+
+              # Performance mode
+              powercfg /SETACTIVE SCHEME_MIN
+              Write-Host " - Set power plan: High Performance"
+          } Catch {
+              Write-Warning "Cleanup encountered issues: $_"
           }
 
-      - name: 🔹 Cleanup Temporary Files (Free Disk Space)
-        run: |
-          Write-Host "🧹 Dọn file tạm để tránh đầy ổ C..."
-          Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
-          Remove-Item "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
-          Write-Host "✅ Dọn xong!"
+          Write-Host "✅ Cleanup completed."
 
-      - name: 🔹 Backup Environment (Apps, User Data)
+      - name: 🧭 Keep Alive (Prevent Idle Timeout)
+        shell: powershell
         run: |
-          Write-Host "💾 Đang sao lưu toàn bộ dữ liệu..."
-          $backupPath = "C:\backup\system-backup.zip"
-          if (Test-Path $backupPath) { Remove-Item $backupPath -Force }
-          Compress-Archive -Path "C:\Users", "C:\Program Files", "C:\ProgramData", "C:\backup" -DestinationPath $backupPath -Force
-
-      - name: 🔹 Upload Backup to GitHub (Artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-backup
-          path: C:\backup
+          Write-Host "🔄 Runner is now persistent. Use CTRL+C to stop manually."
+          while ($true) {
+              Write-Host "$(Get-Date -Format 'HH:mm:ss') | Runner heartbeat..."
+              Start-Sleep -Seconds 600
+          }
