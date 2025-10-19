@@ -1,4 +1,4 @@
-name: AI STV
+name: AI STV Multi-User
 
 on:
   workflow_dispatch:
@@ -55,49 +55,30 @@ jobs:
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
           Write-Host "✅ Đã tạo user AISTV"
 
-      - name: 📥 Download and Setup Playit.gg
+      - name: 📥 Download and Setup PageKite
         shell: pwsh
         run: |
-          Write-Host "📥 Đang tải Playit.gg..."
-          Invoke-WebRequest -Uri "https://playit.gg/downloads/playit-windows-64.exe" -OutFile "playit.exe"
+          Write-Host "📥 Đang tải PageKite..."
+          Invoke-WebRequest -Uri "https://pagekite.net/pk/pagekite.py" -OutFile "pagekite.py"
 
-          Write-Host "🚀 Đang khởi động Playit.gg..."
-          # Chạy playit và tạo tunnel cho RDP
-          Start-Process -FilePath ".\\playit.exe" -ArgumentList "agent", "run" -WindowStyle Hidden
-          Start-Sleep -Seconds 15)
+          # Tạo subdomain duy nhất cho mỗi VM
+          $subdomain = "${{ github.event.inputs.random_code }}.aistv"
+          echo "PAGEKITE_SUBDOMAIN=$subdomain" >> $env:GITHUB_ENV
+          Write-Host "✅ Subdomain: $subdomain"
 
-          # Playit sẽ tự động tạo public URL
-          # Chúng ta cần lấy URL từ playit
-          Write-Host "⏳ Đang chờ Playit URL..."
-
-      - name: 🌐 Get Playit Tunnel Info
+      - name: 🌐 Start PageKite Tunnel for RDP
         shell: pwsh
         run: |
-          # Playit thường tạo file log chứa URL
-          $playitUrl = $null
-          $retries = 0
-          while (-not $playitUrl -and $retries -lt 10) {
-              # Tìm trong process output hoặc file log
-              $processes = Get-Process -Name "playit*" -ErrorAction SilentlyContinue
-              if ($processes) {
-                  # Playit thường hiển thị URL dạng: playit.gg/claim?token=abc123
-                  # Hoặc tạo tunnel với domain: abc123.playit.gg
-                  $randomSubdomain = -join ((97..122) | Get-Random -Count 8 | % {[char]$_})
-                  $playitUrl = "$randomSubdomain.playit.gg"
-                  break
-              }
-              Start-Sleep -Seconds 5
-              $retries++
-          }
+          Write-Host "🚀 Đang khởi động PageKite tunnel..."
+          $subdomain = "$env:PAGEKITE_SUBDOMAIN"
 
-          if (-not $playitUrl) {
-              # Fallback: tạo subdomain random
-              $randomSubdomain = -join ((97..122) | Get-Random -Count 8 | % {[char]$_})
-              $playitUrl = "$randomSubdomain.playit.gg"
-          }
+          # Chạy PageKite cho RDP port 3389
+          Start-Process -FilePath "python" -ArgumentList "pagekite.py", "--clean", "--frontend=pagekite.me:443", "--service_on=rdp:$subdomain.pagekite.me:localhost:3389:$env:PAGEKITE_SECRET" -WindowStyle Hidden
+          Start-Sleep -Seconds 10
 
-          echo "RDP_HOST=$playitUrl" >> $env:GITHUB_ENV
-          Write-Host "✅ Playit URL: $playitUrl"
+          $publicHost = "$subdomain.pagekite.me"
+          echo "RDP_HOST=$publicHost" >> $env:GITHUB_ENV
+          Write-Host "✅ PageKite Public Host: $publicHost"
 
       - name: 💾 Save to Firebase
         shell: pwsh
@@ -112,11 +93,11 @@ jobs:
             created_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             status = "active"
             expires_at = (Get-Date).AddHours(6).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            connection_type = "playit"
-            note = "Kết nối RDP trực tiếp qua Playit.gg - KHÔNG cần VPN"
+            connection_type = "pagekite"
           } | ConvertTo-Json
 
-          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
+          $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
+          Write-Host "💾 Đang lưu thông tin lên Firebase..."
           try {
               $response = Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
               Write-Host "✅ Đã lưu thông tin lên Firebase"
@@ -129,7 +110,7 @@ jobs:
           Write-Host "=========================================="
           Write-Host "✅ THÔNG TIN MÁY ẢO ĐÃ SẴN SÀNG"
           Write-Host "=========================================="
-          Write-Host "🌐 Host Address: $env:RDP_HOST"
+          Write-Host "🌐 Public Host: $env:RDP_HOST"
           Write-Host "👤 Username: AISTV"
           Write-Host "🔑 Password: $env:RDP_PASS"
           Write-Host "📋 Random Code: ${{ github.event.inputs.random_code }}"
@@ -137,16 +118,22 @@ jobs:
           Write-Host "🔧 Hướng dẫn: Mở Remote Desktop → nhập: $env:RDP_HOST"
           Write-Host "=========================================="
 
-      - name: 🔄 Keep Alive
+      - name: 🔄 Keep Tunnel Alive
         shell: pwsh
         run: |
-          Write-Host "🔄 Đang duy trì kết nối Playit..."
+          Write-Host "🔄 Đang duy trì kết nối PageKite..."
           $startTime = Get-Date
           $timeoutMinutes = 350
+
           while ($true) {
               $elapsed = (Get-Date) - $startTime
               $minutesLeft = $timeoutMinutes - $elapsed.TotalMinutes
-              if ($minutesLeft -le 0) { break }
+
+              if ($minutesLeft -le 0) {
+                  Write-Host "⏰ Đã hết thời gian, thoát..."
+                  break
+              }
+
               Write-Host "⏰ Thời gian còn lại: $([math]::Round($minutesLeft, 1)) phút"
               Start-Sleep -Seconds 60
           }
@@ -156,10 +143,10 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "🧹 Đang dọn dẹp Firebase..."
-          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
+          $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
           try {
               Invoke-RestMethod -Uri $url -Method DELETE
-              Write-Host "✅ Đã xóa Firebase"
+              Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
           } catch {
-              Write-Host "⚠️ Không thể xóa Firebase"
+              Write-Host "⚠️ Không thể xóa Firebase: $($_.Exception.Message)"
           }
