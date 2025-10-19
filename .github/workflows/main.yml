@@ -30,30 +30,17 @@ jobs:
       - name: Create RDP User with Secure Password
         shell: pwsh
         run: |
-          # Tạo password đáp ứng complexity policy của Windows
-          # Password phải có: chữ hoa, chữ thường, số, ký tự đặc biệt, ít nhất 8 ký tự
-          $upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
-          $lower = "abcdefghijkmnpqrstuvwxyz"
-          $number = "23456789"
-          $special = "!@#$%&*"
-
-          # Tạo password với cấu trúc: aistv_ + [random 8 ký tự]
-          $randomPart = ""
-          $randomPart += ($upper.ToCharArray() | Get-Random -Count 2) -join ''
-          $randomPart += ($lower.ToCharArray() | Get-Random -Count 2) -join ''
-          $randomPart += ($number.ToCharArray() | Get-Random -Count 2) -join ''
-          $randomPart += ($special.ToCharArray() | Get-Random -Count 2) -join ''
-
-          # Xáo trộn các ký tự
-          $randomPart = ($randomPart.ToCharArray() | Sort-Object {Get-Random}) -join ''
-          $finalPassword = "aistv_" + $randomPart
+          # Tạo password đơn giản nhưng đáp ứng complexity policy
+          # Format: Aistv@ + [mã random] + !
+          $randomPart = "${{ github.event.inputs.random_code }}"
+          $finalPassword = "Aistv@" + $randomPart + "!"
 
           Write-Host "Generated Password: $finalPassword"
           Write-Host "Password Length: $($finalPassword.Length)"
 
           # Tạo user với password
           $securePass = ConvertTo-SecureString $finalPassword -AsPlainText -Force
-          New-LocalUser -Name "AISTV" -Password $securePass -AccountNeverExpires
+          New-LocalUser -Name "AISTV" -Password $securePass -AccountNeverExpires -Description "RDP User"
           Add-LocalGroupMember -Group "Administrators" -Member "AISTV"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "AISTV"
 
