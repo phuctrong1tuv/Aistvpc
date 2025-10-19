@@ -1,4 +1,4 @@
-name: RDP
+name: AI STV
 
 on:
   workflow_dispatch:
@@ -17,9 +17,9 @@ on:
         type: string
 
 jobs:
-  secure-rdp:
+  aistv-pc:
     runs-on: windows-latest
-    timeout-minutes: 355  # Giảm 5 phút để đảm bảo xóa Firebase trước khi GitHub hủy
+    timeout-minutes: 355
 
     steps:
       - name: Configure RDP
@@ -53,37 +53,99 @@ jobs:
 
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: Install Tailscale
+      - name: Setup Environment Variables
         run: |
+          echo "TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}" >> $env:GITHUB_ENV
+          echo "FIREBASE_URL=${{ secrets.FIREBASE_URL }}" >> $env:GITHUB_ENV
+
+      - name: Install Tailscale
+        shell: pwsh
+        run: |
+          Write-Host "📥 Đang cài đặt Tailscale..."
           $installerPath = Join-Path -Path $env:TEMP -ChildPath "tailscale.msi"
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
+          Write-Host "✅ Đã cài đặt Tailscale"
+
+      - name: Wait for Tailscale Service
+        shell: pwsh
+        run: |
+          Write-Host "⏳ Đang chờ dịch vụ Tailscale khởi động..."
+          $serviceName = "Tailscale"
+          $timeout = 30
+          $counter = 0
+
+          while ($counter -lt $timeout) {
+              $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+              if ($service -and $service.Status -eq 'Running') {
+                  Write-Host "✅ Dịch vụ Tailscale đã chạy"
+                  break
+              }
+              Write-Host "Chờ dịch vụ Tailscale... ($counter/$timeout)"
+              Start-Sleep -Seconds 2
+              $counter++
+          }
+
+          if ($counter -eq $timeout) {
+              Write-Host "⚠️ Dịch vụ Tailscale chưa sẵn sàng, tiếp tục..."
+          }
 
       - name: Establish Tailscale Connection
         shell: pwsh
         run: |
-          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
-          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=gh-rdp-$env:GITHUB_RUN_ID
+          Write-Host "🔗 Đang kết nối Tailscale..."
+          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
 
-          $tsIP = $null
-          $retries = 0
-          $maxRetries = 12
-          while ((-not ($tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')) -and ($retries -lt $maxRetries)) {
-              $tsIP = & $tsExe ip -4
-              if (-not ($tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')) {
-                  Write-Host "Chờ Tailscale IP... ($retries/$maxRetries)"
-                  Start-Sleep -Seconds 5
-                  $retries++
-              }
-          }
-
-          if (-not ($tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+          # Kiểm tra file tồn tại
+          if (-not (Test-Path $tsExe)) {
+              Write-Error "❌ Không tìm thấy Tailscale executable"
               exit 1
           }
+
+          # Chạy Tailscale up
+          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=gh-rdp-$env:GITHUB_RUN_ID --accept-routes --accept-dns --reset
+
+          Write-Host "⏳ Đang chờ Tailscale IP..."
+          $tsIP = $null
+          $retries = 0
+          $maxRetries = 18  # Tăng lên 18 lần = 90 giây
+
+          while ($retries -lt $maxRetries) {
+              $tsIP = & $tsExe ip -4
+
+              if ($tsIP -and $tsIP -match '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$') {
+                  Write-Host "✅ Đã nhận Tailscale IP: $tsIP"
+                  break
+              }
+
+              Write-Host "Chờ Tailscale IP... ($retries/$maxRetries)"
+              Start-Sleep -Seconds 5
+              $retries++
+          }
+
+          if (-not $tsIP -or -not ($tsIP -match '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')) {
+              Write-Host "❌ Không nhận được Tailscale IP sau $maxRetries lần thử"
+              Write-Host "🔍 Kiểm tra trạng thái Tailscale:"
+              & $tsExe status
+              Write-Host "🔍 Kiểm tra version:"
+              & $tsExe version
+              exit 1
+          }
+
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
           Write-Host "✅ Tailscale IP: $tsIP"
+
+      - name: Verify Network Connectivity
+        shell: pwsh
+        run: |
+          Write-Host "🔍 Kiểm tra kết nối mạng..."
+          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
+          Write-Host "📊 Trạng thái Tailscale:"
+          & $tsExe status
+          Write-Host "🌐 Địa chỉ IP:"
+          & $tsExe ip -4
+          & $tsExe ip -6
 
       - name: Save to Firebase
         shell: pwsh
@@ -101,7 +163,7 @@ jobs:
           } | ConvertTo-Json
 
           $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
-          Write-Host "Đang lưu thông tin lên Firebase..."
+          Write-Host "💾 Đang lưu thông tin lên Firebase..."
           try {
               $response = Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
               Write-Host "✅ Đã lưu thông tin lên Firebase"
@@ -121,16 +183,11 @@ jobs:
           Write-Host "⏱️ Thời gian sử dụng: 6 giờ"
           Write-Host "=========================================="
 
-      - name: Setup Environment Variables
-        run: |
-          echo "TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}" >> $env:GITHUB_ENV
-          echo "FIREBASE_URL=${{ secrets.FIREBASE_URL }}" >> $env:GITHUB_ENV
-
       - name: Cleanup Firebase before timeout
         if: always()
         shell: pwsh
         run: |
-          Write-Host "🔄 Đang dọn dẹp Firebase..."
+          Write-Host "🧹 Đang dọn dẹp Firebase..."
           $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
           try {
               $response = Invoke-RestMethod -Uri $url -Method DELETE
@@ -142,9 +199,10 @@ jobs:
       - name: Maintain Connection
         shell: pwsh
         run: |
-          Write-Host "🔄 Đang duy trì kết nối..."
+          Write-Host "🔄 Đang duy trì kết nối trong 6 giờ..."
           $startTime = Get-Date
           $timeoutMinutes = 350
+          $checkInterval = 30
 
           while ($true) {
               $elapsed = (Get-Date) - $startTime
@@ -155,6 +213,13 @@ jobs:
                   break
               }
 
+              # Kiểm tra Tailscale mỗi 5 phút
+              if ([math]::Round($elapsed.TotalSeconds) % 300 -eq 0) {
+                  $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
+                  $status = & $tsExe status
+                  Write-Host "🔍 Trạng thái Tailscale: $($status | Select-Object -First 1)"
+              }
+
               Write-Host "⏰ Thời gian còn lại: $([math]::Round($minutesLeft, 1)) phút"
-              Start-Sleep -Seconds 30
+              Start-Sleep -Seconds $checkInterval
           }
