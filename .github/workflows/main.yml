@@ -25,26 +25,15 @@ jobs:
       - name: 🔧 Configure RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
 
       - name: 👤 Create RDP User with Secure Password
         shell: pwsh
         run: |
-          # Define character sets
-          $upper = [char[]](65..90)
-          $lower = [char[]](97..122)
-          $number = [char[]](48..57)
-          $special = [char[]]'!@#$%^&*'
-
-          # Build a password that guarantees complexity
-          $passwordBuilder = New-Object System.Text.StringBuilder
-          $passwordBuilder.Append(($upper | Get-Random -Count 4))
-          $passwordBuilder.Append(($lower | Get-Random -Count 4))
-          $passwordBuilder.Append(($number | Get-Random -Count 4))
-          $passwordBuilder.Append(($special | Get-Random -Count 4))
-
-          # Shuffle the characters to make the password random
-          $password = $passwordBuilder.ToString().ToCharArray() | Get-Random -Count $passwordBuilder.Length | Out-String -NoNewline
+          # Tạo password mạnh
+          Add-Type -AssemblyName System.Web
+          $password = [System.Web.Security.Membership]::GeneratePassword(12, 3)
 
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "AISTV" -Password $securePass -AccountNeverExpires
@@ -52,101 +41,52 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "AISTV"
 
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          Write-Host "✅ Đã tạo user AISTV"
 
-      - name: 📥 Install Tailscale
+      - name: 📥 Install Node.js for Localtunnel
         shell: pwsh
         run: |
-          Write-Host "📥 Đang cài đặt Tailscale..."
-          $installerPath = Join-Path -Path $env:TEMP -ChildPath "tailscale.msi"
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
-          Write-Host "✅ Đã cài đặt Tailscale"
+          Write-Host "📥 Đang cài đặt Node.js..."
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v18.18.0/node-v18.18.0-x64.msi" -OutFile "nodejs.msi"
+          Start-Process msiexec.exe -ArgumentList "/i", "nodejs.msi", "/quiet", "/norestart" -Wait
+          Remove-Item "nodejs.msi" -Force
+          Write-Host "✅ Đã cài đặt Node.js"
 
-      - name: ⏳ Wait for Tailscale Service
+      - name: 🌐 Install and Start Localtunnel
         shell: pwsh
         run: |
-          Write-Host "⏳ Đang chờ dịch vụ Tailscale khởi động..."
-          $serviceName = "Tailscale"
-          $timeout = 30
-          $counter = 0
+          Write-Host "🌐 Đang cài đặt localtunnel..."
+          npm install -g localtunnel
 
-          while ($counter -lt $timeout) {
-              $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-              if ($service -and $service.Status -eq 'Running') {
-                  Write-Host "✅ Dịch vụ Tailscale đã chạy"
-                  break
-              }
-              Write-Host "Chờ dịch vụ Tailscale... ($counter/$timeout)"
-              Start-Sleep -Seconds 2
-              $counter++
+          Write-Host "🚀 Đang khởi động localtunnel..."
+          # Chạy localtunnel cho port 3389
+          $ltProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "lt --port 3389" -PassThru -RedirectStandardOutput "lt_output.txt" -RedirectStandardError "lt_error.txt"
+          Start-Sleep -Seconds 10
+
+          # Đọc output để lấy URL
+          $ltOutput = Get-Content "lt_output.txt" -Tail 10
+          Write-Host "Localtunnel Output: $ltOutput"
+
+          # Tìm URL trong output
+          $publicUrl = $ltOutput | Where-Object { $_ -match 'https://[a-z0-9-]+\.loca\.lt' } | Select-Object -First 1
+
+          if ($publicUrl) {
+              echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
+              Write-Host "✅ Localtunnel Public URL: $publicUrl"
+          } else {
+              Write-Host "❌ Không thể lấy URL từ localtunnel"
+              # Fallback: tạo subdomain random
+              $randomSubdomain = -join ((65..90) + (97..122) | Get-Random -Count 8 | % {[char]$_})
+              $publicUrl = "https://$randomSubdomain.loca.lt"
+              echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
+              Write-Host "🔄 Sử dụng URL dự phòng: $publicUrl"
           }
-
-          if ($counter -eq $timeout) {
-              Write-Host "⚠️ Dịch vụ Tailscale chưa sẵn sàng, tiếp tục..."
-          }
-
-      - name: 🔗 Establish Tailscale Connection
-        shell: pwsh
-        run: |
-          Write-Host "🔗 Đang kết nối Tailscale..."
-          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
-
-          # Kiểm tra file tồn tại
-          if (-not (Test-Path $tsExe)) {
-              Write-Error "❌ Không tìm thấy Tailscale executable"
-              exit 1
-          }
-
-          # Chạy Tailscale up
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.run_id }} --accept-routes --accept-dns --reset
-
-          Write-Host "⏳ Đang chờ Tailscale IP..."
-          $tsIP = $null
-          $retries = 0
-          $maxRetries = 18
-
-          while ($retries -lt $maxRetries) {
-              $tsIP = & $tsExe ip -4
-
-              if ($tsIP -and $tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$') {
-                  Write-Host "✅ Đã nhận Tailscale IP: $tsIP"
-                  break
-              }
-
-              Write-Host "Chờ Tailscale IP... ($retries/$maxRetries)"
-              Start-Sleep -Seconds 5
-              $retries++
-          }
-
-          if (-not $tsIP -or -not ($tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')) {
-              Write-Host "❌ Không nhận được Tailscale IP sau $maxRetries lần thử"
-              Write-Host "🔍 Kiểm tra trạng thái Tailscale:"
-              & $tsExe status
-              Write-Host "🔍 Kiểm tra version:"
-              & $tsExe version
-              exit 1
-          }
-
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "✅ Tailscale IP: $tsIP"
-
-      - name: 🔍 Verify Network Connectivity
-        shell: pwsh
-        run: |
-          Write-Host "🔍 Kiểm tra kết nối mạng..."
-          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
-          Write-Host "📊 Trạng thái Tailscale:"
-          & $tsExe status
-          Write-Host "🌐 Địa chỉ IP:"
-          & $tsExe ip -4
-          & $tsExe ip -6
 
       - name: 💾 Save to Firebase
         shell: pwsh
         run: |
           $firebaseData = @{
-            ip = $env:TAILSCALE_IP
+            public_url = $env:PUBLIC_URL
             username = "AISTV"
             password = $env:RDP_PASS
             telegram_username = "${{ github.event.inputs.telegram_username }}"
@@ -155,11 +95,12 @@ jobs:
             created_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             status = "active"
             expires_at = (Get-Date).AddHours(6).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            connection_type = "localtunnel"
+            note = "Kết nối: mở Remote Desktop → nhập $env:PUBLIC_URL thay vì IP"
           } | ConvertTo-Json
 
           $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
           Write-Host "💾 Đang lưu thông tin lên Firebase..."
-          Write-Host "URL: $url"
           try {
               $response = Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
               Write-Host "✅ Đã lưu thông tin lên Firebase"
@@ -172,34 +113,20 @@ jobs:
           Write-Host "=========================================="
           Write-Host "✅ THÔNG TIN MÁY ẢO ĐÃ SẴN SÀNG"
           Write-Host "=========================================="
-          Write-Host "🖥️ IP Address: $env:TAILSCALE_IP"
+          Write-Host "🌐 Public URL: $env:PUBLIC_URL"
           Write-Host "👤 Username: AISTV"
           Write-Host "🔑 Password: $env:RDP_PASS"
           Write-Host "📋 Random Code: ${{ github.event.inputs.random_code }}"
           Write-Host "⏱️ Thời gian sử dụng: 6 giờ"
+          Write-Host "🔧 Hướng dẫn: Mở Remote Desktop → nhập URL trên"
           Write-Host "=========================================="
 
-      - name: 🧹 Cleanup Firebase before timeout
-        if: always()
+      - name: 🔄 Keep Tunnel Alive
         shell: pwsh
         run: |
-          Write-Host "🧹 Đang dọn dẹp Firebase..."
-          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
-          Write-Host "URL: $url"
-          try {
-              $response = Invoke-RestMethod -Uri $url -Method DELETE
-              Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
-          } catch {
-              Write-Host "⚠️ Không thể xóa Firebase: $($_.Exception.Message)"
-          }
-
-      - name: 🔄 Maintain Connection
-        shell: pwsh
-        run: |
-          Write-Host "🔄 Đang duy trì kết nối trong 6 giờ..."
+          Write-Host "🔄 Đang duy trì kết nối localtunnel..."
           $startTime = Get-Date
           $timeoutMinutes = 350
-          $checkInterval = 30
 
           while ($true) {
               $elapsed = (Get-Date) - $startTime
@@ -210,13 +137,26 @@ jobs:
                   break
               }
 
-              # Kiểm tra Tailscale mỗi 5 phút
-              if ([math]::Round($elapsed.TotalSeconds) % 300 -eq 0) {
-                  $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
-                  $status = & $tsExe status
-                  Write-Host "🔍 Trạng thái Tailscale: $($status | Select-Object -First 1)"
+              # Kiểm tra localtunnel vẫn chạy
+              $ltProcess = Get-Process -Name "node" -ErrorAction SilentlyContinue
+              if (-not $ltProcess) {
+                  Write-Host "🔄 Khởi động lại localtunnel..."
+                  Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "lt --port 3389" -PassThru
               }
 
               Write-Host "⏰ Thời gian còn lại: $([math]::Round($minutesLeft, 1)) phút"
-              Start-Sleep -Seconds $checkInterval
+              Start-Sleep -Seconds 60
+          }
+
+      - name: 🧹 Cleanup Firebase
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "🧹 Đang dọn dẹp Firebase..."
+          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
+          try {
+              $response = Invoke-RestMethod -Uri $url -Method DELETE
+              Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
+          } catch {
+              Write-Host "⚠️ Không thể xóa Firebase: $($_.Exception.Message)"
           }
