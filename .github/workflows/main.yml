@@ -1,5 +1,4 @@
 name: AI STV 
-
 on:
   workflow_dispatch:
   schedule:
@@ -52,32 +51,35 @@ jobs:
           $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Show info
+      - name: Show connection info
         shell: powershell
         run: |
           Write-Host "==========================================="
-          Write-Host " AI STV - RDP SESSION INFO"
+          Write-Host "   AI STV - RDP SESSION INFO"
+          Write-Host "-------------------------------------------"
           Write-Host " IP Address : $env:TAILSCALE_IP"
           Write-Host " Username   : $env:USERNAME"
           Write-Host " Password   : $env:PASSWORD"
+          Write-Host "-------------------------------------------"
+          Write-Host " Time limit : 6 hours (auto renew)"
           Write-Host "==========================================="
 
-      - name: Countdown
+      - name: Countdown timer
         shell: powershell
         run: |
-          for ($i=300; $i -gt 0; $i--) {
-            $h=[math]::Floor($i/60)
-            $m=$i%60
-            Write-Host ("⏳ Còn lại {0:D2}h {1:D2}m" -f $h,$m)
+          for ($i=360; $i -gt 0; $i--) {
+            $h = [math]::Floor($i / 60)
+            $m = $i % 60
+            Write-Host ("Remaining Time: {0:D2}h {1:D2}m" -f $h, $m)
             Start-Sleep -Seconds 60
           }
-          Write-Host "❌ Hết thời gian, RDP sẽ dừng."
+          Write-Host "Time expired. RDP will restart soon."
 
-      - name: Auto restart next RDP
+      - name: Auto restart next session
         if: always()
         shell: bash
         run: |
-          echo "🌀 Restarting AI STV ..."
+          echo "Restarting AI STV session..."
           curl -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
