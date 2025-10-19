@@ -1,0 +1,85 @@
+name: AI STV 
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'   # Tự khởi động lại mỗi 6 tiếng
+
+jobs:
+  windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create RDP user
+        shell: powershell
+        run: |
+          $username = "AI_STV_$env:GITHUB_RUN_ID"
+          $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{};:,.<>/?"
+          $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member $username
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+          echo "USERNAME=$username" >> $env:GITHUB_ENV
+          echo "PASSWORD=$password" >> $env:GITHUB_ENV
+
+      - name: Enable RDP
+        shell: powershell
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $path = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $url -OutFile $path
+          Start-Process msiexec.exe -ArgumentList "/i `"$path`" /quiet /norestart" -Wait
+          Remove-Item $path -Force
+
+      - name: Start Tailscale
+        shell: powershell
+        run: |
+          $auth="${{ secrets.TAILSCALE_AUTH_KEY }}"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$auth --hostname="AI-STV-$env:GITHUB_RUN_ID"
+          Start-Sleep -Seconds 10
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      - name: Show info
+        shell: powershell
+        run: |
+          Write-Host "==========================================="
+          Write-Host " AI STV - RDP SESSION INFO"
+          Write-Host " IP Address : $env:TAILSCALE_IP"
+          Write-Host " Username   : $env:USERNAME"
+          Write-Host " Password   : $env:PASSWORD"
+          Write-Host "==========================================="
+
+      - name: Countdown
+        shell: powershell
+        run: |
+          for ($i=300; $i -gt 0; $i--) {
+            $h=[math]::Floor($i/60)
+            $m=$i%60
+            Write-Host ("⏳ Còn lại {0:D2}h {1:D2}m" -f $h,$m)
+            Start-Sleep -Seconds 60
+          }
+          Write-Host "❌ Hết thời gian, RDP sẽ dừng."
+
+      - name: Auto restart next RDP
+        if: always()
+        shell: bash
+        run: |
+          echo "🌀 Restarting AI STV ..."
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches \
+            -d '{"ref":"main"}'
