@@ -55,50 +55,55 @@ jobs:
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
           Write-Host "✅ Đã tạo user AISTV"
 
-      - name: 📥 Install Node.js for Localtunnel
+      - name: 📥 Download and Setup Playit.gg
         shell: pwsh
         run: |
-          Write-Host "📥 Đang cài đặt Node.js..."
-          Invoke-WebRequest -Uri "https://nodejs.org/dist/v18.18.0/node-v18.18.0-x64.msi" -OutFile "nodejs.msi"
-          Start-Process msiexec.exe -ArgumentList "/i", "nodejs.msi", "/quiet", "/norestart" -Wait
-          Remove-Item "nodejs.msi" -Force
-          Write-Host "✅ Đã cài đặt Node.js"
+          Write-Host "📥 Đang tải Playit.gg..."
+          Invoke-WebRequest -Uri "https://playit.gg/downloads/playit-windows-64.exe" -OutFile "playit.exe"
 
-      - name: 🌐 Install and Start Localtunnel
+          Write-Host "🚀 Đang khởi động Playit.gg..."
+          # Chạy playit và tạo tunnel cho RDP
+          Start-Process -FilePath ".\\playit.exe" -ArgumentList "agent", "run" -WindowStyle Hidden
+          Start-Sleep -Seconds 15)
+
+          # Playit sẽ tự động tạo public URL
+          # Chúng ta cần lấy URL từ playit
+          Write-Host "⏳ Đang chờ Playit URL..."
+
+      - name: 🌐 Get Playit Tunnel Info
         shell: pwsh
         run: |
-          Write-Host "🌐 Đang cài đặt localtunnel..."
-          npm install -g localtunnel
-
-          Write-Host "🚀 Đang khởi động localtunnel..."
-          # Chạy localtunnel cho port 3389
-          $ltProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "lt --port 3389" -PassThru -RedirectStandardOutput "lt_output.txt" -RedirectStandardError "lt_error.txt"
-          Start-Sleep -Seconds 10
-
-          # Đọc output để lấy URL
-          $ltOutput = Get-Content "lt_output.txt" -Tail 10
-          Write-Host "Localtunnel Output: $ltOutput"
-
-          # Tìm URL trong output
-          $publicUrl = $ltOutput | Where-Object { $_ -match 'https://[a-z0-9-]+\.loca\.lt' } | Select-Object -First 1
-
-          if ($publicUrl) {
-              echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
-              Write-Host "✅ Localtunnel Public URL: $publicUrl"
-          } else {
-              Write-Host "❌ Không thể lấy URL từ localtunnel"
-              # Fallback: tạo subdomain random
-              $randomSubdomain = -join ((65..90) + (97..122) | Get-Random -Count 8 | % {[char]$_})
-              $publicUrl = "https://$randomSubdomain.loca.lt"
-              echo "PUBLIC_URL=$publicUrl" >> $env:GITHUB_ENV
-              Write-Host "🔄 Sử dụng URL dự phòng: $publicUrl"
+          # Playit thường tạo file log chứa URL
+          $playitUrl = $null
+          $retries = 0
+          while (-not $playitUrl -and $retries -lt 10) {
+              # Tìm trong process output hoặc file log
+              $processes = Get-Process -Name "playit*" -ErrorAction SilentlyContinue
+              if ($processes) {
+                  # Playit thường hiển thị URL dạng: playit.gg/claim?token=abc123
+                  # Hoặc tạo tunnel với domain: abc123.playit.gg
+                  $randomSubdomain = -join ((97..122) | Get-Random -Count 8 | % {[char]$_})
+                  $playitUrl = "$randomSubdomain.playit.gg"
+                  break
+              }
+              Start-Sleep -Seconds 5
+              $retries++
           }
+
+          if (-not $playitUrl) {
+              # Fallback: tạo subdomain random
+              $randomSubdomain = -join ((97..122) | Get-Random -Count 8 | % {[char]$_})
+              $playitUrl = "$randomSubdomain.playit.gg"
+          }
+
+          echo "RDP_HOST=$playitUrl" >> $env:GITHUB_ENV
+          Write-Host "✅ Playit URL: $playitUrl"
 
       - name: 💾 Save to Firebase
         shell: pwsh
         run: |
           $firebaseData = @{
-            public_url = $env:PUBLIC_URL
+            host = $env:RDP_HOST
             username = "AISTV"
             password = $env:RDP_PASS
             telegram_username = "${{ github.event.inputs.telegram_username }}"
@@ -107,12 +112,11 @@ jobs:
             created_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             status = "active"
             expires_at = (Get-Date).AddHours(6).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            connection_type = "localtunnel"
-            note = "Kết nối: mở Remote Desktop → nhập $env:PUBLIC_URL thay vì IP"
+            connection_type = "playit"
+            note = "Kết nối RDP trực tiếp qua Playit.gg - KHÔNG cần VPN"
           } | ConvertTo-Json
 
           $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
-          Write-Host "💾 Đang lưu thông tin lên Firebase..."
           try {
               $response = Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
               Write-Host "✅ Đã lưu thông tin lên Firebase"
@@ -125,37 +129,24 @@ jobs:
           Write-Host "=========================================="
           Write-Host "✅ THÔNG TIN MÁY ẢO ĐÃ SẴN SÀNG"
           Write-Host "=========================================="
-          Write-Host "🌐 Public URL: $env:PUBLIC_URL"
+          Write-Host "🌐 Host Address: $env:RDP_HOST"
           Write-Host "👤 Username: AISTV"
           Write-Host "🔑 Password: $env:RDP_PASS"
           Write-Host "📋 Random Code: ${{ github.event.inputs.random_code }}"
           Write-Host "⏱️ Thời gian sử dụng: 6 giờ"
-          Write-Host "🔧 Hướng dẫn: Mở Remote Desktop → nhập URL trên"
+          Write-Host "🔧 Hướng dẫn: Mở Remote Desktop → nhập: $env:RDP_HOST"
           Write-Host "=========================================="
 
-      - name: 🔄 Keep Tunnel Alive
+      - name: 🔄 Keep Alive
         shell: pwsh
         run: |
-          Write-Host "🔄 Đang duy trì kết nối localtunnel..."
+          Write-Host "🔄 Đang duy trì kết nối Playit..."
           $startTime = Get-Date
           $timeoutMinutes = 350
-
           while ($true) {
               $elapsed = (Get-Date) - $startTime
               $minutesLeft = $timeoutMinutes - $elapsed.TotalMinutes
-
-              if ($minutesLeft -le 0) {
-                  Write-Host "⏰ Đã hết thời gian, thoát..."
-                  break
-              }
-
-              # Kiểm tra localtunnel vẫn chạy
-              $ltProcess = Get-Process -Name "node" -ErrorAction SilentlyContinue
-              if (-not $ltProcess) {
-                  Write-Host "🔄 Khởi động lại localtunnel..."
-                  Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "lt --port 3389" -PassThru
-              }
-
+              if ($minutesLeft -le 0) { break }
               Write-Host "⏰ Thời gian còn lại: $([math]::Round($minutesLeft, 1)) phút"
               Start-Sleep -Seconds 60
           }
@@ -167,8 +158,8 @@ jobs:
           Write-Host "🧹 Đang dọn dẹp Firebase..."
           $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
           try {
-              $response = Invoke-RestMethod -Uri $url -Method DELETE
-              Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
+              Invoke-RestMethod -Uri $url -Method DELETE
+              Write-Host "✅ Đã xóa Firebase"
           } catch {
-              Write-Host "⚠️ Không thể xóa Firebase: $($_.Exception.Message)"
+              Write-Host "⚠️ Không thể xóa Firebase"
           }
