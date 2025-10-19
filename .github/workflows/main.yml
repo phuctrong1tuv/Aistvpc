@@ -1,4 +1,4 @@
-name: AI STV Multi-User
+name: AI STV
 
 on:
   workflow_dispatch:
@@ -55,36 +55,36 @@ jobs:
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
           Write-Host "✅ Đã tạo user AISTV"
 
-      - name: 📥 Download and Setup PageKite
+      - name: 📥 Install Tailscale
         shell: pwsh
         run: |
-          Write-Host "📥 Đang tải PageKite..."
-          Invoke-WebRequest -Uri "https://pagekite.net/pk/pagekite.py" -OutFile "pagekite.py"
+          Write-Host "📥 Đang cài đặt Tailscale..."
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile "tailscale-setup.exe"
+          Start-Process -FilePath ".\tailscale-setup.exe" -ArgumentList "/S" -Wait
+          Remove-Item "tailscale-setup.exe" -Force
+          Write-Host "✅ Đã cài đặt Tailscale"
 
-          # Tạo subdomain duy nhất cho mỗi VM
-          $subdomain = "${{ github.event.inputs.random_code }}.aistv"
-          echo "PAGEKITE_SUBDOMAIN=$subdomain" >> $env:GITHUB_ENV
-          Write-Host "✅ Subdomain: $subdomain"
-
-      - name: 🌐 Start PageKite Tunnel for RDP
+      - name: 🔑 Authenticate Tailscale
         shell: pwsh
         run: |
-          Write-Host "🚀 Đang khởi động PageKite tunnel..."
-          $subdomain = "$env:PAGEKITE_SUBDOMAIN"
+          Write-Host "🔑 Đang xác thực Tailscale..."
+          $env:TAILSCALE_KEY = "${{ secrets.TAILSCALE_KEY }}"
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_KEY --hostname=github-actions-vm-${{ github.event.inputs.random_code }} --accept-routes=true --accept-dns=false --advertise-exit-node=true
 
-          # Chạy PageKite cho RDP port 3389
-          Start-Process -FilePath "python" -ArgumentList "pagekite.py", "--clean", "--frontend=pagekite.me:443", "--service_on=rdp:$subdomain.pagekite.me:localhost:3389:$env:PAGEKITE_SECRET" -WindowStyle Hidden
+          # Lấy thông tin Tailscale IP
           Start-Sleep -Seconds 10
+          $tailscaleStatus = & "C:\Program Files\Tailscale\tailscale.exe" status --json
+          $statusJson = $tailscaleStatus | ConvertFrom-Json
+          $tailscaleIp = $statusJson.Self.TailscaleIPs[0]
 
-          $publicHost = "$subdomain.pagekite.me"
-          echo "RDP_HOST=$publicHost" >> $env:GITHUB_ENV
-          Write-Host "✅ PageKite Public Host: $publicHost"
+          echo "TAILSCALE_IP=$tailscaleIp" >> $env:GITHUB_ENV
+          Write-Host "✅ Tailscale IP: $tailscaleIp"
 
       - name: 💾 Save to Firebase
         shell: pwsh
         run: |
           $firebaseData = @{
-            host = $env:RDP_HOST
+            tailscale_ip = $env:TAILSCALE_IP
             username = "AISTV"
             password = $env:RDP_PASS
             telegram_username = "${{ github.event.inputs.telegram_username }}"
@@ -93,10 +93,11 @@ jobs:
             created_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             status = "active"
             expires_at = (Get-Date).AddHours(6).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-            connection_type = "pagekite"
+            connection_type = "tailscale"
+            note = "Kết nối bằng Tailscale IP - Cần cài đặt Tailscale trên thiết bị của bạn"
           } | ConvertTo-Json
 
-          $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
+          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
           Write-Host "💾 Đang lưu thông tin lên Firebase..."
           try {
               $response = Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
@@ -110,18 +111,21 @@ jobs:
           Write-Host "=========================================="
           Write-Host "✅ THÔNG TIN MÁY ẢO ĐÃ SẴN SÀNG"
           Write-Host "=========================================="
-          Write-Host "🌐 Public Host: $env:RDP_HOST"
+          Write-Host "🌐 Tailscale IP: $env:TAILSCALE_IP"
           Write-Host "👤 Username: AISTV"
           Write-Host "🔑 Password: $env:RDP_PASS"
           Write-Host "📋 Random Code: ${{ github.event.inputs.random_code }}"
           Write-Host "⏱️ Thời gian sử dụng: 6 giờ"
-          Write-Host "🔧 Hướng dẫn: Mở Remote Desktop → nhập: $env:RDP_HOST"
+          Write-Host "🔧 Hướng dẫn:"
+          Write-Host "1. Cài đặt Tailscale trên thiết bị của bạn"
+          Write-Host "2. Đăng nhập cùng tài khoản Tailscale"
+          Write-Host "3. Mở Remote Desktop → nhập IP trên"
           Write-Host "=========================================="
 
-      - name: 🔄 Keep Tunnel Alive
+      - name: 🔄 Keep Alive
         shell: pwsh
         run: |
-          Write-Host "🔄 Đang duy trì kết nối PageKite..."
+          Write-Host "🔄 Đang duy trì kết nối..."
           $startTime = Get-Date
           $timeoutMinutes = 350
 
@@ -134,6 +138,13 @@ jobs:
                   break
               }
 
+              # Kiểm tra Tailscale vẫn kết nối
+              $tailscaleStatus = & "C:\Program Files\Tailscale\tailscale.exe" status 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host "🔄 Khởi động lại Tailscale..."
+                  & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_KEY --reset
+              }
+
               Write-Host "⏰ Thời gian còn lại: $([math]::Round($minutesLeft, 1)) phút"
               Start-Sleep -Seconds 60
           }
@@ -143,9 +154,9 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "🧹 Đang dọn dẹp Firebase..."
-          $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
+          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
           try {
-              Invoke-RestMethod -Uri $url -Method DELETE
+              $response = Invoke-RestMethod -Uri $url -Method DELETE
               Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
           } catch {
               Write-Host "⚠️ Không thể xóa Firebase: $($_.Exception.Message)"
