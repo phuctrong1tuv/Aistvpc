@@ -2,6 +2,19 @@ name: RDP
 
 on:
   workflow_dispatch:
+    inputs:
+      random_code:
+        description: 'Random Code'
+        required: true
+        type: string
+      telegram_username:
+        description: 'Telegram Username'
+        required: true
+        type: string
+      telegram_id:
+        description: 'Telegram ID'
+        required: true
+        type: string
 
 jobs:
   secure-rdp:
@@ -49,12 +62,12 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
+          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
           & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.run_id }}
 
           $tsIP = $null
           $retries = 0
-          while (-not ($tsIP -match '\d+\.\d+\.\d+\.\d+') -and $retries -lt 12) {
+          while (-not ($tsIP -match '\\d+\\.\\d+\\.\\d+\\.\\d+') -and $retries -lt 12) {
               $tsIP = & $tsExe ip -4
               Start-Sleep -Seconds 5
               $retries++
@@ -66,12 +79,30 @@ jobs:
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
+      - name: Save to Firebase
+        shell: pwsh
+        run: |
+          $firebaseData = @{
+            ip = $env:TAILSCALE_IP
+            username = "RDP"
+            password = $env:RDP_PASS
+            telegram_username = "${{ github.event.inputs.telegram_username }}"
+            telegram_id = "${{ github.event.inputs.telegram_id }}"
+            random_code = "${{ github.event.inputs.random_code }}"
+            created_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            status = "active"
+          } | ConvertTo-Json
+
+          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
+          Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
+
       - name: Display RDP Info
         run: |
           Write-Host "✅ RDP Info:"
           Write-Host "IP Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $env:RDP_PASS"
+          Write-Host "Random Code: ${{ github.event.inputs.random_code }}"
 
       - name: Maintain Connection
         run: |
