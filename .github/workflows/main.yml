@@ -61,23 +61,29 @@ jobs:
           Remove-Item $installerPath -Force
 
       - name: Establish Tailscale Connection
+        shell: pwsh
         run: |
           $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.run_id }}
+          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=gh-rdp-$env:GITHUB_RUN_ID
 
           $tsIP = $null
           $retries = 0
-          while (-not ($tsIP -match '\\d+\\.\\d+\\.\\d+\\.\\d+') -and $retries < 12) {
+          $maxRetries = 12
+          while ((-not ($tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')) -and ($retries -lt $maxRetries)) {
               $tsIP = & $tsExe ip -4
-              Start-Sleep -Seconds 5
-              $retries++
+              if (-not ($tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')) {
+                  Write-Host "Chờ Tailscale IP... ($retries/$maxRetries)"
+                  Start-Sleep -Seconds 5
+                  $retries++
+              }
           }
 
-          if (-not $tsIP) {
+          if (-not ($tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')) {
               Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "✅ Tailscale IP: $tsIP"
 
       - name: Save to Firebase
         shell: pwsh
@@ -94,27 +100,61 @@ jobs:
             expires_at = (Get-Date).AddHours(6).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
           } | ConvertTo-Json
 
-          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
-          Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
+          $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
+          Write-Host "Đang lưu thông tin lên Firebase..."
+          try {
+              $response = Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
+              Write-Host "✅ Đã lưu thông tin lên Firebase"
+          } catch {
+              Write-Host "❌ Lỗi khi lưu Firebase: $($_.Exception.Message)"
+          }
 
       - name: Display RDP Info
         run: |
-          Write-Host "✅ RDP Info:"
-          Write-Host "IP Address: $env:TAILSCALE_IP"
-          Write-Host "Username: AISTV"
-          Write-Host "Password: $env:RDP_PASS"
-          Write-Host "Random Code: ${{ github.event.inputs.random_code }}"
+          Write-Host "=========================================="
+          Write-Host "✅ THÔNG TIN MÁY ẢO ĐÃ SẴN SÀNG"
+          Write-Host "=========================================="
+          Write-Host "🖥️ IP Address: $env:TAILSCALE_IP"
+          Write-Host "👤 Username: AISTV"
+          Write-Host "🔑 Password: $env:RDP_PASS"
+          Write-Host "📋 Random Code: ${{ github.event.inputs.random_code }}"
+          Write-Host "⏱️ Thời gian sử dụng: 6 giờ"
+          Write-Host "=========================================="
+
+      - name: Setup Environment Variables
+        run: |
+          echo "TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}" >> $env:GITHUB_ENV
+          echo "FIREBASE_URL=${{ secrets.FIREBASE_URL }}" >> $env:GITHUB_ENV
 
       - name: Cleanup Firebase before timeout
         if: always()
         shell: pwsh
         run: |
-          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
-          Invoke-RestMethod -Uri $url -Method DELETE
-          Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
+          Write-Host "🔄 Đang dọn dẹp Firebase..."
+          $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
+          try {
+              $response = Invoke-RestMethod -Uri $url -Method DELETE
+              Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
+          } catch {
+              Write-Host "⚠️ Không thể xóa Firebase: $($_.Exception.Message)"
+          }
 
       - name: Maintain Connection
+        shell: pwsh
         run: |
+          Write-Host "🔄 Đang duy trì kết nối..."
+          $startTime = Get-Date
+          $timeoutMinutes = 350
+
           while ($true) {
-              Start-Sleep -Seconds 300
+              $elapsed = (Get-Date) - $startTime
+              $minutesLeft = $timeoutMinutes - $elapsed.TotalMinutes
+
+              if ($minutesLeft -le 0) {
+                  Write-Host "⏰ Đã hết thời gian, thoát..."
+                  break
+              }
+
+              Write-Host "⏰ Thời gian còn lại: $([math]::Round($minutesLeft, 1)) phút"
+              Start-Sleep -Seconds 30
           }
