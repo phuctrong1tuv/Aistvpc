@@ -30,23 +30,28 @@ jobs:
       - name: Create RDP User with Secure Password
         shell: pwsh
         run: |
-          # Define character sets
-          $upper = [char[]](65..90)
-          $lower = [char[]](97..122)
-          $number = [char[]](48..57)
-          $special = [char[]]'!@#$%^&*'
+          # Tạo password đáp ứng complexity policy của Windows
+          # Password phải có: chữ hoa, chữ thường, số, ký tự đặc biệt, ít nhất 8 ký tự
+          $upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+          $lower = "abcdefghijkmnpqrstuvwxyz"
+          $number = "23456789"
+          $special = "!@#$%&*"
 
-          # Build a password that guarantees complexity
-          $passwordBuilder = New-Object System.Text.StringBuilder
-          $passwordBuilder.Append(($upper | Get-Random -Count 4))
-          $passwordBuilder.Append(($lower | Get-Random -Count 4))
-          $passwordBuilder.Append(($number | Get-Random -Count 4))
-          $passwordBuilder.Append(($special | Get-Random -Count 4))
+          # Tạo password với cấu trúc: aistv_ + [random 8 ký tự]
+          $randomPart = ""
+          $randomPart += ($upper.ToCharArray() | Get-Random -Count 2) -join ''
+          $randomPart += ($lower.ToCharArray() | Get-Random -Count 2) -join ''
+          $randomPart += ($number.ToCharArray() | Get-Random -Count 2) -join ''
+          $randomPart += ($special.ToCharArray() | Get-Random -Count 2) -join ''
 
-          # Shuffle the characters to make the password random
-          $password = $passwordBuilder.ToString().ToCharArray() | Get-Random -Count $passwordBuilder.Length | Out-String -NoNewline
-          $finalPassword = "AISTV_" + $password
+          # Xáo trộn các ký tự
+          $randomPart = ($randomPart.ToCharArray() | Sort-Object {Get-Random}) -join ''
+          $finalPassword = "aistv_" + $randomPart
 
+          Write-Host "Generated Password: $finalPassword"
+          Write-Host "Password Length: $($finalPassword.Length)"
+
+          # Tạo user với password
           $securePass = ConvertTo-SecureString $finalPassword -AsPlainText -Force
           New-LocalUser -Name "AISTV" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "AISTV"
