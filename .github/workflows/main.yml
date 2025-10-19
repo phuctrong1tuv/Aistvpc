@@ -19,7 +19,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 355  # 5 phút trước 6h để xóa Firebase
+    timeout-minutes: 355  # Giảm 5 phút để đảm bảo xóa Firebase trước khi GitHub hủy
 
     steps:
       - name: Configure RDP
@@ -27,49 +27,31 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
 
-      - name: Create RDP User with Simple Password First
+      - name: Create RDP User with Secure Password
         shell: pwsh
         run: |
-          # Tạo user với password đơn giản trước
-          $simplePassword = "TempPass123!"
-          $securePass = ConvertTo-SecureString $simplePassword -AsPlainText -Force
-          New-LocalUser -Name "AISTV" -Password $securePass -AccountNeverExpires -Description "RDP User"
+          # Define character sets
+          $upper = [char[]](65..90)
+          $lower = [char[]](97..122)
+          $number = [char[]](48..57)
+          $special = [char[]]'!@#$%^&*'
+
+          # Build a password that guarantees complexity
+          $passwordBuilder = New-Object System.Text.StringBuilder
+          $passwordBuilder.Append(($upper | Get-Random -Count 4))
+          $passwordBuilder.Append(($lower | Get-Random -Count 4))
+          $passwordBuilder.Append(($number | Get-Random -Count 4))
+          $passwordBuilder.Append(($special | Get-Random -Count 4))
+
+          # Shuffle the characters to make the password random
+          $password = $passwordBuilder.ToString().ToCharArray() | Get-Random -Count $passwordBuilder.Length | Out-String -NoNewline
+
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name "AISTV" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "AISTV"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "AISTV"
 
-          Write-Host "✅ Created user with temporary password"
-
-      - name: Change to Complex Password
-        shell: pwsh
-        run: |
-          # Tạo password phức tạp với 36 ký tự
-          $upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-          $lower = "abcdefghijklmnopqrstuvwxyz"
-          $number = "0123456789"
-          $special = "!@#$%^&*"
-
-          # Tạo password 36 ký tự đáp ứng complexity
-          $complexPassword = ""
-          $complexPassword += ($upper.ToCharArray() | Get-Random -Count 10) -join ''
-          $complexPassword += ($lower.ToCharArray() | Get-Random -Count 10) -join ''
-          $complexPassword += ($number.ToCharArray() | Get-Random -Count 10) -join ''
-          $complexPassword += ($special.ToCharArray() | Get-Random -Count 6) -join ''
-
-          # Xáo trộn password
-          $complexPassword = ($complexPassword.ToCharArray() | Sort-Object {Get-Random}) -join ''
-
-          # Thêm tiền tố aistv_ vào đầu password
-          $finalPassword = "aistv_" + $complexPassword
-
-          Write-Host "Generated Password Length: $($finalPassword.Length)"
-          Write-Host "Password starts with: aistv_"
-
-          # Đổi password sang phức tạp
-          $securePass = ConvertTo-SecureString $finalPassword -AsPlainText -Force
-          Set-LocalUser -Name "AISTV" -Password $securePass
-
-          echo "RDP_PASS=$finalPassword" >> $env:GITHUB_ENV
-          Write-Host "✅ Password changed to complex password"
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
         run: |
@@ -81,7 +63,7 @@ jobs:
       - name: Establish Tailscale Connection
         run: |
           $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.event.inputs.random_code }}
+          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.run_id }}
 
           $tsIP = $null
           $retries = 0
@@ -122,22 +104,17 @@ jobs:
           Write-Host "Username: AISTV"
           Write-Host "Password: $env:RDP_PASS"
           Write-Host "Random Code: ${{ github.event.inputs.random_code }}"
-          Write-Host "Expires at: $((Get-Date).AddHours(6).ToString('yyyy-MM-dd HH:mm:ss'))"
 
-      - name: Wait for 355 minutes then cleanup Firebase
+      - name: Cleanup Firebase before timeout
+        if: always()
         shell: pwsh
         run: |
-          # Chờ 355 phút (5 phút trước khi hết 6h)
-          Start-Sleep -Seconds 21300
-
-          # Xóa thông tin trên Firebase
           $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
           Invoke-RestMethod -Uri $url -Method DELETE
+          Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
 
-          Write-Host "✅ Đã xóa thông tin máy ảo khỏi Firebase (Mã: ${{ github.event.inputs.random_code }})"
-
-      - name: Maintain Connection (Final 5 minutes)
+      - name: Maintain Connection
         run: |
-          # Duy trì kết nối trong 5 phút cuối
-          Start-Sleep -Seconds 300
-          Write-Host "🕒 Máy ảo đã hết hạn 6 giờ"
+          while ($true) {
+              Start-Sleep -Seconds 300
+          }
