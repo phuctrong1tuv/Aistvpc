@@ -6,45 +6,55 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
 
       - name: Create RDP User with Secure Password
+        shell: pwsh
         run: |
-          $password = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 16 | ForEach-Object {[char]$_})
+          # Define character sets
+          $upper = [char[]](65..90)
+          $lower = [char[]](97..122)
+          $number = [char[]](48..57)
+          $special = [char[]]'!@#$%^&*'
+
+          # Build a password that guarantees complexity
+          $passwordBuilder = New-Object System.Text.StringBuilder
+          $passwordBuilder.Append(($upper | Get-Random -Count 4))
+          $passwordBuilder.Append(($lower | Get-Random -Count 4))
+          $passwordBuilder.Append(($number | Get-Random -Count 4))
+          $passwordBuilder.Append(($special | Get-Random -Count 4))
+
+          # Shuffle the characters to make the password random
+          $password = $passwordBuilder.ToString().ToCharArray() | Get-Random -Count $passwordBuilder.Length | Out-String -NoNewline
+
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
           $installerPath = Join-Path -Path $env:TEMP -ChildPath "tailscale.msi"
-
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
       - name: Establish Tailscale Connection
         run: |
           $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.run_id }}
 
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 12) {
+          while (-not ($tsIP -match '\d+\.\d+\.\d+\.\d+') -and $retries -lt 12) {
               $tsIP = & $tsExe ip -4
               Start-Sleep -Seconds 5
               $retries++
