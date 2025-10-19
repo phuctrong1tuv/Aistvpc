@@ -2,89 +2,36 @@ name: AI STV
 
 on:
   workflow_dispatch:
-
-env:
-  POOL_FILE: aistv_pool.json
-  SLOT_NAME: aistv-01   # có thể thay đổi thành slot khác cho nhiều RDP
+  schedule:
+    - cron: '0 */6 * * *'   # Tự khởi động lại mỗi 6 tiếng
 
 jobs:
-  secure-rdp:
+  windows-rdp:
     runs-on: windows-latest
     timeout-minutes: 360
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      - name: Mark slot in-use (commit pool)
-        run: |
-          python - <<'PY'
-import json, os
-from datetime import datetime, timedelta
-
-pool_path = "${{ env.POOL_FILE }}"
-slot_name = "${{ env.SLOT_NAME }}"
-
-if not os.path.exists(pool_path):
-    pool = {"slots": []}
-else:
-    pool = json.load(open(pool_path))
-
-found = False
-for s in pool.get("slots", []):
-    if s["name"] == slot_name:
-        s["status"] = "in_use"
-        s["owner"] = f"workflow:{os.getenv('GITHUB_RUN_ID')}"
-        s["expires_at"] = (datetime.utcnow() + timedelta(minutes=300)).isoformat() + "Z"
-        found = True
-        break
-
-if not found:
-    pool["slots"].append({
-        "name": slot_name,
-        "status": "in_use",
-        "owner": f"workflow:{os.getenv('GITHUB_RUN_ID')}",
-        "expires_at": (datetime.utcnow() + timedelta(minutes=300)).isoformat() + "Z"
-    })
-
-with open(pool_path, "w") as f:
-    json.dump(pool, f, indent=2)
-
-os.system('git config user.email "actions@github.com"')
-os.system('git config user.name "github-actions[bot]"')
-os.system(f'git add "{pool_path}" && git commit -m "Mark {slot_name} in_use by run {os.getenv("GITHUB_RUN_ID")}" || true')
-PY
-
-      - name: Create rotating RDP user (AI STV)
+      - name: Create RDP user
         shell: powershell
         run: |
-          $username = "AI_STV_${env:GITHUB_RUN_ID}"
+          $username = "AI_STV_$env:GITHUB_RUN_ID"
           $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{};:,.<>/?"
-          $rnd = -join ((1..20) | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
-          $securePass = ConvertTo-SecureString $rnd -AsPlainText -Force
+          $password = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)] })
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member $username
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username
+          echo "USERNAME=$username" >> $env:GITHUB_ENV
+          echo "PASSWORD=$password" >> $env:GITHUB_ENV
 
-          if (Get-LocalUser -Name $username -ErrorAction SilentlyContinue) {
-            $u = Get-LocalUser -Name $username
-            $u | Set-LocalUser -Password $securePass
-          } else {
-            New-LocalUser -Name $username -Password $securePass -AccountNeverExpires
-          }
-
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
-
-          Write-Host "USERNAME=$username" >> $env:GITHUB_ENV
-          Write-Host "PASSWORD=$rnd" >> $env:GITHUB_ENV
-
-      - name: Enable RDP & firewall rules
+      - name: Enable RDP
         shell: powershell
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Restart-Service -Name TermService -Force
-          netsh advfirewall firewall delete rule name="RDP-Allow" 2>$null
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
 
       - name: Install Tailscale
@@ -96,67 +43,43 @@ PY
           Start-Process msiexec.exe -ArgumentList "/i `"$path`" /quiet /norestart" -Wait
           Remove-Item $path -Force
 
-      - name: Start Tailscale and get IP
+      - name: Start Tailscale
         shell: powershell
         run: |
-          $auth = "${{ secrets.TAILSCALE_AUTH_KEY }}"
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$auth --hostname=gh-runner-$env:GITHUB_RUN_ID
-          $tsIP = ""
-          for ($i=0; $i -lt 12; $i++) {
-            $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-            if ($tsIP) { break }
-            Start-Sleep -Seconds 5
-          }
-          if (-not $tsIP) { throw "No Tailscale IP assigned" }
-          Write-Host "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          $auth="${{ secrets.TAILSCALE_AUTH_KEY }}"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=$auth --hostname="AI-STV-$env:GITHUB_RUN_ID"
+          Start-Sleep -Seconds 10
+          $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Show connection info
+      - name: Show info
         shell: powershell
         run: |
-          $ip = $env:TAILSCALE_IP
-          $user = $env:USERNAME
-          $pass = $env:PASSWORD
-          Write-Host ""
           Write-Host "==========================================="
-          Write-Host " AI STV - Remote Desktop "
-          Write-Host "-------------------------------------------"
-          Write-Host " IP Address : $ip"
-          Write-Host " Username   : $user"
-          Write-Host " Password   : $pass"
+          Write-Host " AI STV - RDP SESSION INFO"
+          Write-Host " IP Address : $env:TAILSCALE_IP"
+          Write-Host " Username   : $env:USERNAME"
+          Write-Host " Password   : $env:PASSWORD"
           Write-Host "==========================================="
-          Write-Host ""
 
-      - name: Countdown timer (show remaining time)
+      - name: Countdown
         shell: powershell
         run: |
-          $minutes = 300
-          for ($i = $minutes; $i -gt 0; $i--) {
-            $h = [math]::Floor($i / 60)
-            $m = $i % 60
-            Write-Host ("⏳ Còn lại: {0:D2} giờ {1:D2} phút..." -f $h, $m)
+          for ($i=300; $i -gt 0; $i--) {
+            $h=[math]::Floor($i/60)
+            $m=$i%60
+            Write-Host ("⏳ Còn lại {0:D2}h {1:D2}m" -f $h,$m)
             Start-Sleep -Seconds 60
           }
-          Write-Host "⛔ Hết thời gian, đóng phiên RDP."
+          Write-Host "❌ Hết thời gian, RDP sẽ dừng."
 
-      - name: Release slot (mark free)
+      - name: Auto restart next RDP
         if: always()
+        shell: bash
         run: |
-          python - <<'PY'
-import json, os
-pool_path = "${{ env.POOL_FILE }}"
-slot_name = "${{ env.SLOT_NAME }}"
-try:
-    pool = json.load(open(pool_path))
-    for s in pool["slots"]:
-        if s["name"] == slot_name:
-            s["status"] = "free"
-            s["owner"] = None
-            s["expires_at"] = None
-            break
-    open(pool_path,"w").write(json.dumps(pool,indent=2))
-    os.system('git config user.email "actions@github.com"')
-    os.system('git config user.name "github-actions[bot]"')
-    os.system(f'git add "{pool_path}" && git commit -m "Release {slot_name} after expiry" || true')
-except Exception as e:
-    print("Release error:", e)
-PY
+          echo "🌀 Restarting AI STV ..."
+          curl -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/main.yml/dispatches \
+            -d '{"ref":"main"}'
