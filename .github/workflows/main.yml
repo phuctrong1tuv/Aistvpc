@@ -27,24 +27,49 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
 
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User with Simple Password First
         shell: pwsh
         run: |
-          # Tạo password đơn giản nhưng đáp ứng complexity policy
-          # Format: Aistv@ + [mã random] + !
-          $randomPart = "${{ github.event.inputs.random_code }}"
-          $finalPassword = "Aistv@" + $randomPart + "!"
-
-          Write-Host "Generated Password: $finalPassword"
-          Write-Host "Password Length: $($finalPassword.Length)"
-
-          # Tạo user với password
-          $securePass = ConvertTo-SecureString $finalPassword -AsPlainText -Force
+          # Tạo user với password đơn giản trước
+          $simplePassword = "TempPass123!"
+          $securePass = ConvertTo-SecureString $simplePassword -AsPlainText -Force
           New-LocalUser -Name "AISTV" -Password $securePass -AccountNeverExpires -Description "RDP User"
           Add-LocalGroupMember -Group "Administrators" -Member "AISTV"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "AISTV"
 
+          Write-Host "✅ Created user with temporary password"
+
+      - name: Change to Complex Password
+        shell: pwsh
+        run: |
+          # Tạo password phức tạp với 36 ký tự
+          $upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+          $lower = "abcdefghijklmnopqrstuvwxyz"
+          $number = "0123456789"
+          $special = "!@#$%^&*"
+
+          # Tạo password 36 ký tự đáp ứng complexity
+          $complexPassword = ""
+          $complexPassword += ($upper.ToCharArray() | Get-Random -Count 10) -join ''
+          $complexPassword += ($lower.ToCharArray() | Get-Random -Count 10) -join ''
+          $complexPassword += ($number.ToCharArray() | Get-Random -Count 10) -join ''
+          $complexPassword += ($special.ToCharArray() | Get-Random -Count 6) -join ''
+
+          # Xáo trộn password
+          $complexPassword = ($complexPassword.ToCharArray() | Sort-Object {Get-Random}) -join ''
+
+          # Thêm tiền tố aistv_ vào đầu password
+          $finalPassword = "aistv_" + $complexPassword
+
+          Write-Host "Generated Password Length: $($finalPassword.Length)"
+          Write-Host "Password starts with: aistv_"
+
+          # Đổi password sang phức tạp
+          $securePass = ConvertTo-SecureString $finalPassword -AsPlainText -Force
+          Set-LocalUser -Name "AISTV" -Password $securePass
+
           echo "RDP_PASS=$finalPassword" >> $env:GITHUB_ENV
+          Write-Host "✅ Password changed to complex password"
 
       - name: Install Tailscale
         run: |
