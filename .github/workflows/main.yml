@@ -1,10 +1,10 @@
-name: RDP
+name: RDP Workflow
 
 on:
   workflow_dispatch:
 
 jobs:
-  secure-rdp:
+  build:
     runs-on: windows-latest
     timeout-minutes: 360
 
@@ -55,8 +55,8 @@ jobs:
           $tsIP = $null
           $retries = 0
           while (-not ($tsIP -match '\d+\.\d+\.\d+\.\d+') -and $retries -lt 12) {
-              $tsIP = & $tsExe ip -4
               Start-Sleep -Seconds 5
+              $tsIP = & $tsExe ip -4
               $retries++
           }
 
@@ -68,10 +68,10 @@ jobs:
 
       - name: Display RDP Info
         run: |
-          Write-Host "✅ RDP Info:"
-          Write-Host "IP Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $env:RDP_PASS"
+          Write-Host "---RDP_CREDENTIALS_START---"
+          Write-Host "RDP_IP:$env:TAILSCALE_IP"
+          Write-Host "RDP_PASS:$env:RDP_PASS"
+          Write-Host "---RDP_CREDENTIALS_END---"
 
       - name: Maintain Connection
         run: |
