@@ -17,17 +17,20 @@ jobs:
       - name: Create RDP User with Secure Password
         shell: pwsh
         run: |
+          # Define character sets
           $upper = [char[]](65..90)
           $lower = [char[]](97..122)
           $number = [char[]](48..57)
           $special = [char[]]'!@#$%^&*'
 
+          # Build a password that guarantees complexity
           $passwordBuilder = New-Object System.Text.StringBuilder
           $passwordBuilder.Append(($upper | Get-Random -Count 4))
           $passwordBuilder.Append(($lower | Get-Random -Count 4))
           $passwordBuilder.Append(($number | Get-Random -Count 4))
           $passwordBuilder.Append(($special | Get-Random -Count 4))
 
+          # Shuffle the characters to make the password random
           $password = $passwordBuilder.ToString().ToCharArray() | Get-Random -Count $passwordBuilder.Length | Out-String -NoNewline
 
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
@@ -47,7 +50,7 @@ jobs:
       - name: Establish Tailscale Connection
         run: |
           $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
-          & $tsExe up --authkey=tskey-auth-k9S9FW2rNY11CNTRL-hcoyHSZLu6CpdrbuPipg6CXouSRW42UVj --hostname=gh-rdp-{{ github.run_id }}
+          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.run_id }}
 
           $tsIP = $null
           $retries = 0
@@ -70,7 +73,7 @@ jobs:
           Write-Host "Username: RDP"
           Write-Host "Password: $env:RDP_PASS"
 
-      - name: Maintain Connection (keep runner alive)
+      - name: Maintain Connection
         run: |
           while ($true) {
               Start-Sleep -Seconds 300
