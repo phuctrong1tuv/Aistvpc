@@ -13,6 +13,7 @@ jobs:
           netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
       - name: Create user
         run: |
+          Add-Type -AssemblyName System.Web
           $p=[System.Web.Security.Membership]::GeneratePassword(12,2)
           net user RDP $p /add
           net localgroup Administrators RDP /add
