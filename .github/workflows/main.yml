@@ -22,12 +22,12 @@ jobs:
     timeout-minutes: 355
 
     steps:
-      - name: Configure RDP
+      - name: 🔧 Configure RDP
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
 
-      - name: Create RDP User with Secure Password
+      - name: 👤 Create RDP User with Secure Password
         shell: pwsh
         run: |
           # Define character sets
@@ -53,22 +53,17 @@ jobs:
 
           echo "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: Setup Environment Variables
-        run: |
-          echo "TAILSCALE_AUTH_KEY=${{ secrets.TAILSCALE_AUTH_KEY }}" >> $env:GITHUB_ENV
-          echo "FIREBASE_URL=${{ secrets.FIREBASE_URL }}" >> $env:GITHUB_ENV
-
-      - name: Install Tailscale
+      - name: 📥 Install Tailscale
         shell: pwsh
         run: |
           Write-Host "📥 Đang cài đặt Tailscale..."
           $installerPath = Join-Path -Path $env:TEMP -ChildPath "tailscale.msi"
           Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Start-Process msiexec.exe -ArgumentList "/i", "$installerPath", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
           Write-Host "✅ Đã cài đặt Tailscale"
 
-      - name: Wait for Tailscale Service
+      - name: ⏳ Wait for Tailscale Service
         shell: pwsh
         run: |
           Write-Host "⏳ Đang chờ dịch vụ Tailscale khởi động..."
@@ -91,11 +86,11 @@ jobs:
               Write-Host "⚠️ Dịch vụ Tailscale chưa sẵn sàng, tiếp tục..."
           }
 
-      - name: Establish Tailscale Connection
+      - name: 🔗 Establish Tailscale Connection
         shell: pwsh
         run: |
           Write-Host "🔗 Đang kết nối Tailscale..."
-          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
+          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
 
           # Kiểm tra file tồn tại
           if (-not (Test-Path $tsExe)) {
@@ -104,17 +99,17 @@ jobs:
           }
 
           # Chạy Tailscale up
-          & $tsExe up --authkey=$env:TAILSCALE_AUTH_KEY --hostname=gh-rdp-$env:GITHUB_RUN_ID --accept-routes --accept-dns --reset
+          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.run_id }} --accept-routes --accept-dns --reset
 
           Write-Host "⏳ Đang chờ Tailscale IP..."
           $tsIP = $null
           $retries = 0
-          $maxRetries = 18  # Tăng lên 18 lần = 90 giây
+          $maxRetries = 18
 
           while ($retries -lt $maxRetries) {
               $tsIP = & $tsExe ip -4
 
-              if ($tsIP -and $tsIP -match '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$') {
+              if ($tsIP -and $tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$') {
                   Write-Host "✅ Đã nhận Tailscale IP: $tsIP"
                   break
               }
@@ -124,7 +119,7 @@ jobs:
               $retries++
           }
 
-          if (-not $tsIP -or -not ($tsIP -match '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')) {
+          if (-not $tsIP -or -not ($tsIP -match '^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$')) {
               Write-Host "❌ Không nhận được Tailscale IP sau $maxRetries lần thử"
               Write-Host "🔍 Kiểm tra trạng thái Tailscale:"
               & $tsExe status
@@ -136,18 +131,18 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
           Write-Host "✅ Tailscale IP: $tsIP"
 
-      - name: Verify Network Connectivity
+      - name: 🔍 Verify Network Connectivity
         shell: pwsh
         run: |
           Write-Host "🔍 Kiểm tra kết nối mạng..."
-          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
+          $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
           Write-Host "📊 Trạng thái Tailscale:"
           & $tsExe status
           Write-Host "🌐 Địa chỉ IP:"
           & $tsExe ip -4
           & $tsExe ip -6
 
-      - name: Save to Firebase
+      - name: 💾 Save to Firebase
         shell: pwsh
         run: |
           $firebaseData = @{
@@ -162,8 +157,9 @@ jobs:
             expires_at = (Get-Date).AddHours(6).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
           } | ConvertTo-Json
 
-          $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
+          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
           Write-Host "💾 Đang lưu thông tin lên Firebase..."
+          Write-Host "URL: $url"
           try {
               $response = Invoke-RestMethod -Uri $url -Method PUT -Body $firebaseData -ContentType "application/json"
               Write-Host "✅ Đã lưu thông tin lên Firebase"
@@ -171,7 +167,7 @@ jobs:
               Write-Host "❌ Lỗi khi lưu Firebase: $($_.Exception.Message)"
           }
 
-      - name: Display RDP Info
+      - name: 📋 Display RDP Info
         run: |
           Write-Host "=========================================="
           Write-Host "✅ THÔNG TIN MÁY ẢO ĐÃ SẴN SÀNG"
@@ -183,12 +179,13 @@ jobs:
           Write-Host "⏱️ Thời gian sử dụng: 6 giờ"
           Write-Host "=========================================="
 
-      - name: Cleanup Firebase before timeout
+      - name: 🧹 Cleanup Firebase before timeout
         if: always()
         shell: pwsh
         run: |
           Write-Host "🧹 Đang dọn dẹp Firebase..."
-          $url = "$env:FIREBASE_URL/vms/${{ github.event.inputs.random_code }}.json"
+          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
+          Write-Host "URL: $url"
           try {
               $response = Invoke-RestMethod -Uri $url -Method DELETE
               Write-Host "✅ Đã xóa thông tin VM khỏi Firebase"
@@ -196,7 +193,7 @@ jobs:
               Write-Host "⚠️ Không thể xóa Firebase: $($_.Exception.Message)"
           }
 
-      - name: Maintain Connection
+      - name: 🔄 Maintain Connection
         shell: pwsh
         run: |
           Write-Host "🔄 Đang duy trì kết nối trong 6 giờ..."
@@ -215,7 +212,7 @@ jobs:
 
               # Kiểm tra Tailscale mỗi 5 phút
               if ([math]::Round($elapsed.TotalSeconds) % 300 -eq 0) {
-                  $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\tailscale.exe"
+                  $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
                   $status = & $tsExe status
                   Write-Host "🔍 Trạng thái Tailscale: $($status | Select-Object -First 1)"
               }
