@@ -19,7 +19,7 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 360
+    timeout-minutes: 355  # 5 phút trước 6h để xóa Firebase
 
     steps:
       - name: Configure RDP
@@ -45,13 +45,14 @@ jobs:
 
           # Shuffle the characters to make the password random
           $password = $passwordBuilder.ToString().ToCharArray() | Get-Random -Count $passwordBuilder.Length | Out-String -NoNewline
+          $finalPassword = "AISTV_" + $password
 
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          $securePass = ConvertTo-SecureString $finalPassword -AsPlainText -Force
+          New-LocalUser -Name "AISTV" -Password $securePass -AccountNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "AISTV"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "AISTV"
 
-          echo "RDP_PASS=$password" >> $env:GITHUB_ENV
+          echo "RDP_PASS=$finalPassword" >> $env:GITHUB_ENV
 
       - name: Install Tailscale
         run: |
@@ -63,11 +64,11 @@ jobs:
       - name: Establish Tailscale Connection
         run: |
           $tsExe = Join-Path -Path $env:ProgramFiles -ChildPath "Tailscale\\tailscale.exe"
-          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.run_id }}
+          & $tsExe up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-rdp-${{ github.event.inputs.random_code }}
 
           $tsIP = $null
           $retries = 0
-          while (-not ($tsIP -match '\\d+\\.\\d+\\.\\d+\\.\\d+') -and $retries -lt 12) {
+          while (-not ($tsIP -match '\\d+\\.\\d+\\.\\d+\\.\\d+') -and $retries < 12) {
               $tsIP = & $tsExe ip -4
               Start-Sleep -Seconds 5
               $retries++
@@ -84,13 +85,14 @@ jobs:
         run: |
           $firebaseData = @{
             ip = $env:TAILSCALE_IP
-            username = "RDP"
+            username = "AISTV"
             password = $env:RDP_PASS
             telegram_username = "${{ github.event.inputs.telegram_username }}"
             telegram_id = "${{ github.event.inputs.telegram_id }}"
             random_code = "${{ github.event.inputs.random_code }}"
             created_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
             status = "active"
+            expires_at = (Get-Date).AddHours(6).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
           } | ConvertTo-Json
 
           $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
@@ -100,12 +102,25 @@ jobs:
         run: |
           Write-Host "✅ RDP Info:"
           Write-Host "IP Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
+          Write-Host "Username: AISTV"
           Write-Host "Password: $env:RDP_PASS"
           Write-Host "Random Code: ${{ github.event.inputs.random_code }}"
+          Write-Host "Expires at: $((Get-Date).AddHours(6).ToString('yyyy-MM-dd HH:mm:ss'))"
 
-      - name: Maintain Connection
+      - name: Wait for 355 minutes then cleanup Firebase
+        shell: pwsh
         run: |
-          while ($true) {
-              Start-Sleep -Seconds 300
-          }
+          # Chờ 355 phút (5 phút trước khi hết 6h)
+          Start-Sleep -Seconds 21300
+
+          # Xóa thông tin trên Firebase
+          $url = "https://sever-login-ae5cc-default-rtdb.firebaseio.com/vms/${{ github.event.inputs.random_code }}.json"
+          Invoke-RestMethod -Uri $url -Method DELETE
+
+          Write-Host "✅ Đã xóa thông tin máy ảo khỏi Firebase (Mã: ${{ github.event.inputs.random_code }})"
+
+      - name: Maintain Connection (Final 5 minutes)
+        run: |
+          # Duy trì kết nối trong 5 phút cuối
+          Start-Sleep -Seconds 300
+          Write-Host "🕒 Máy ảo đã hết hạn 6 giờ"
